@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Um exemplo prático de normalização de pedidos de loja em 1FN, 2FN e 3FN usando PostgreSQL.">
+  <meta name="color-scheme" content="light">
+  <title>Da planilha ao modelo relacional | Modelagem na prática</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#topo" aria-label="Modelagem na prática, início">modelagem<span>./</span>na prática</a>
+      <nav aria-label="Navegação principal">
+        <a href="#problema">O problema</a>
+        <a href="#passos">1FN a 3FN</a>
+        <a href="#sql">SQL</a>
+        <a href="#limites">Limites</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="conteudo">
+    <section class="hero" id="topo" aria-labelledby="titulo">
+      <div class="hero-copy">
+        <p class="eyebrow">Modelagem de dados · PostgreSQL 18</p>
+        <h1 id="titulo">Da planilha de pedidos a um modelo relacional</h1>
+        <p class="dek">Vamos separar fatos que mudam em ritmos diferentes e chegar à 3FN sem perder o histórico do preço vendido.</p>
+        <div class="byline">
+          <span class="byline-author"><img src="images/enrico-monteiro-de-andrade.jpg" alt="Retrato de Enrico Monteiro de Andrade, usando óculos e camiseta preta"><span><strong>Enrico Monteiro de Andrade</strong></span></span>
+          <span class="byline-author"><img src="images/bruno-seiti-ota.jpg" alt="Retrato de Bruno Seiti Ota ao ar livre"><span><strong>Bruno Seiti Ota</strong></span></span>
+          <span class="byline-author"><img src="images/matheus-alves-da-silva.jpg" alt="Retrato de Matheus Alves da Silva ao ar livre, usando camisa clara"><span><strong>Matheus Alves da Silva</strong></span></span>
+          <span class="byline-author"><img src="images/gabriel-tavares-moura-dias.jpg" alt="Foto de Gabriel Tavares Moura Dias em um espelho, com o celular cobrindo parte do rosto"><span><strong>Gabriel Tavares Moura Dias</strong></span></span>
+          <span class="byline-author"><img src="images/eduardo-elioterio-de-oliveira.jpg" alt="Retrato de Eduardo Elioterio de Oliveira"><span><strong>Eduardo Elioterio de Oliveira</strong></span></span>
+          <span>Publicação: 19 de outubro de 2026</span>
+          <span>Revisado em 19 de outubro de 2026</span>
+        </div>
+        <div class="review-notice" role="note">
+          <strong>Sobre o artigo.</strong> O recorte é a decomposição de pedidos de uma loja fictícia em 1FN, 2FN e 3FN.
+        </div>
+      </div>
+      <aside class="hero-card" aria-label="Resumo do artigo">
+        <p class="card-label">O que vamos resolver</p>
+        <ul>
+          <li>Uma lista de produtos guardada dentro de uma célula</li>
+          <li>Nome de produto repetido em cada pedido</li>
+          <li>Dados de cliente copiados entre pedidos</li>
+        </ul>
+        <p class="stack">HTML · SQL · PostgreSQL</p>
+      </aside>
+    </section>
+
+    <div class="layout">
+      <aside class="toc" aria-label="Índice do artigo">
+        <p class="toc-title">Neste artigo</p>
+        <a href="#problema">01 · O problema</a>
+        <a href="#conceitos">02 · Vocabulário</a>
+        <a href="#passos">03 · Normalização passo a passo</a>
+        <a href="#sql">04 · Script PostgreSQL</a>
+        <a href="#erros">05 · Erros comuns</a>
+        <a href="#limites">06 · Limites e próximos passos</a>
+        <a href="#referencias">07 · Referências</a>
+      </aside>
+
+      <article class="article">
+        <section id="problema">
+          <p class="eyebrow">01 · O problema</p>
+          <h2>Um dado mudou. Em quantas linhas precisamos corrigir?</h2>
+          <p>Imagine uma loja que guarda o pedido inteiro em uma planilha. Uma linha pode ter o nome e o e-mail da cliente, a data da compra e uma lista de produtos separados por vírgula. Parece rápido no começo. Depois, a cliente troca de e-mail e o mesmo valor precisa ser corrigido em vários pedidos. Um produto aparece com dois nomes diferentes. E fica difícil responder: quantas unidades desse produto foram vendidas?</p>
+          <p>Vamos usar pedidos de uma loja fictícia para decompor essa planilha. Ao final, você saberá reconhecer as anomalias, acompanhar uma decomposição até a 3FN e consultar os dados com SQL. O objetivo não é dividir tudo em tabelas minúsculas: é registrar cada fato no lugar em que ele pode ser mantido sem contradição. A progressão parte de um problema concreto e só depois apresenta os termos, como recomenda a leitura introdutória consultada [4].</p>
+          <div class="table-wrap" role="region" aria-label="Exemplo da planilha inicial; deslize horizontalmente para ler todas as colunas" tabindex="0">
+            <table>
+              <caption>Antes: vários produtos e fatos de entidades diferentes na mesma linha</caption>
+              <thead><tr><th scope="col">Pedido</th><th scope="col">Data</th><th scope="col">Cliente</th><th scope="col">E-mail</th><th scope="col">Produtos</th><th scope="col">Quantidades</th></tr></thead>
+              <tbody>
+                <tr><td>501</td><td>2026-10-01</td><td>Ana Lima</td><td>ana@example.test</td><td>Café, Filtro</td><td>2, 1</td></tr>
+                <tr><td>502</td><td>2026-10-03</td><td>Ana Lima</td><td>ana@example.test</td><td>Café</td><td>1</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout"><strong>Três anomalias aparecem rápido.</strong> Atualização: corrigir o e-mail em vários pedidos. Inserção: cadastrar um produto antes de ele entrar em um pedido fica difícil. Exclusão: apagar o único pedido de um produto pode apagar também a única cópia de sua descrição.</div>
+        </section>
+
+        <section id="conceitos">
+          <p class="eyebrow">02 · Vocabulário</p>
+          <h2>Quatro termos antes de mexer nas tabelas</h2>
+          <dl class="glossary">
+            <div><dt>Chave candidata</dt><dd>Coluna ou conjunto mínimo de colunas capaz de identificar cada linha. A chave primária é a candidata escolhida para identificar os registros da tabela.</dd></div>
+            <div><dt>Chave estrangeira</dt><dd>Coluna ou conjunto de colunas que referencia uma chave única em outra tabela. O banco pode usá-la para impedir referências a clientes ou produtos inexistentes.</dd></div>
+            <div><dt>Dependência funcional</dt><dd>Escrevemos <code>X → Y</code> quando, pelas regras do negócio, cada valor de X determina um único valor de Y. Por exemplo, se o código do cliente identifica o cliente, então <code>cliente_id → nome, email</code>.</dd></div>
+            <div><dt>Atributo atômico</dt><dd>Um valor tratado como uma unidade no domínio escolhido. Para este exemplo, guardamos um produto por linha de item, em vez de uma lista de produtos dentro de uma célula.</dd></div>
+          </dl>
+          <details class="deep-dive">
+            <summary>Caixa de aprofundamento: chaves e formas normais</summary>
+            <p>As definições formais consideram todas as chaves candidatas, não apenas a chave primária escolhida [1, 2]. Para ensinar a intuição aqui, vamos acompanhar a chave composta <code>(pedido_id, produto_id)</code> na tabela de linhas do pedido. A 2FN exige que atributos não-chave dependam da chave inteira; a 3FN, além da 2FN, exige que para cada dependência funcional não trivial <code>X → A</code>, X seja superchave ou A seja atributo primo (membro de alguma chave candidata). No nosso caso, a regra prática de remover dependências transitivas explica a decomposição.
+            </p>
+          </details>
+        </section>
+
+        <section id="passos">
+          <p class="eyebrow">03 · Normalização passo a passo</p>
+          <h2>Uma decomposição guiada pelas dependências</h2>
+          <h3>Primeira Forma Normal: uma ocorrência por célula</h3>
+          <p>Para esta modelagem relacional, cada célula guarda um valor do domínio da coluna. Em vez de escrever “Café, Filtro” em uma célula, fazemos uma linha para cada produto do pedido. A chave candidata da tabela resultante é <code>(pedido_id, produto_id)</code>, assumindo que cada produto aparece no máximo uma vez por pedido.</p>
+          <div class="table-wrap" role="region" aria-label="Tabela em 1FN com um produto por linha; deslize horizontalmente para ler todas as colunas" tabindex="0">
+            <table>
+              <caption>Depois da 1FN: os valores repetidos viraram linhas, mas alguns dados ainda se repetem</caption>
+              <thead><tr><th scope="col">Pedido</th><th scope="col">Data</th><th scope="col">Cliente ID</th><th scope="col">Nome</th><th scope="col">E-mail</th><th scope="col">Produto ID</th><th scope="col">Produto</th><th scope="col">Qtd.</th><th scope="col">Preço vendido</th></tr></thead>
+              <tbody>
+                <tr><td>501</td><td>2026-10-01</td><td>41</td><td>Ana Lima</td><td>ana@example.test</td><td>7</td><td>Café</td><td>2</td><td>18,90</td></tr>
+                <tr><td>501</td><td>2026-10-01</td><td>41</td><td>Ana Lima</td><td>ana@example.test</td><td>9</td><td>Filtro</td><td>1</td><td>12,00</td></tr>
+                <tr><td>502</td><td>2026-10-03</td><td>41</td><td>Ana Lima</td><td>ana@example.test</td><td>7</td><td>Café</td><td>1</td><td>18,90</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Segunda Forma Normal: tirar dependências de parte da chave</h3>
+          <p>Na tabela acima, <code>pedido_id → data_pedido, cliente_id, cliente_nome, cliente_email</code>: esses dados dependem só de parte da chave composta. Também temos <code>produto_id → produto_nome</code>. Já quantidade e preço efetivamente vendido dependem da combinação do pedido com o produto. Vamos separar pedidos, produtos e itens.</p>
+          <p>O preço efetivamente vendido fica no item: ele registra o acordo daquele pedido, mesmo que o preço atual do catálogo mude depois. Isso não é a mesma coisa que duplicar o preço atual do produto.</p>
+          <div class="schema-strip" aria-label="Tabelas após a segunda forma normal">
+            <div><strong>pedidos_2fn</strong><span>pedido_id · data · cliente_id · nome · e-mail</span></div>
+            <div><strong>produtos</strong><span>produto_id · nome</span></div>
+            <div><strong>itens_pedido</strong><span>pedido_id · produto_id · quantidade · preço vendido</span></div>
+          </div>
+
+          <h3>Terceira Forma Normal: tirar a dependência transitiva</h3>
+          <p>A tabela <code>pedidos_2fn</code> tem chave simples <code>pedido_id</code>, então não há dependência parcial ali. Mas <code>pedido_id → cliente_id</code> e <code>cliente_id → nome, email</code>. O nome e o e-mail são fatos do cliente, não do pedido. Se ficarem nos pedidos, uma troca de e-mail ainda exige atualizar várias linhas. Criamos <code>clientes</code> e guardamos em <code>pedidos</code> apenas a referência ao cliente.</p>
+          <figure class="diagram">
+            <img src="images/decomposicao.svg" alt="Diagrama da decomposição em quatro tabelas: clientes se relaciona com pedidos; pedidos se relaciona com itens do pedido; itens do pedido se relaciona com produtos.">
+            <figcaption>Figura 1 — cada tabela guarda fatos sobre uma entidade ou associação; as chaves estrangeiras conectam o modelo.</figcaption>
+          </figure>
+          <div class="schema-final" aria-label="Modelo final em terceira forma normal">
+            <div><strong>clientes</strong><span>cliente_id · nome · e-mail</span></div>
+            <div><strong>pedidos</strong><span>pedido_id · data · cliente_id</span></div>
+            <div><strong>produtos</strong><span>produto_id · nome</span></div>
+            <div><strong>itens_pedido</strong><span>pedido_id · produto_id · quantidade · preço vendido</span></div>
+          </div>
+          <p class="small-note">A decomposição funciona para as regras deste exemplo. Se a loja permitir várias linhas do mesmo produto dentro do mesmo pedido, use também um número de linha ou uma chave própria para cada item.</p>
+        </section>
+
+        <section id="sql">
+          <p class="eyebrow">04 · SQL que você pode executar</p>
+          <h2>As quatro tabelas finais em PostgreSQL 18</h2>
+          <p>O script completo cria um esquema de demonstração, insere dados fictícios e executa uma consulta de relatório. Ele pode ser rodado em uma base local limpa; os objetos ficam sob o esquema <code>artigo_normalizacao</code>. O código fonte está em <a href="sql/normalizacao_pedidos.sql">sql/normalizacao_pedidos.sql</a>.</p>
+          <pre class="code-block"><code><span class="comment">-- PostgreSQL 18: entidades separadas e associação com chave composta.</span>
+<span class="keyword">CREATE SCHEMA IF NOT EXISTS</span> artigo_normalizacao;
+<span class="keyword">SET search_path TO</span> artigo_normalizacao;
+
+<span class="keyword">CREATE TABLE IF NOT EXISTS</span> clientes (
+  cliente_id <span class="type">integer</span> <span class="keyword">PRIMARY KEY</span>,
+  nome <span class="type">text</span> <span class="keyword">NOT NULL</span>,
+  email <span class="type">text</span> <span class="keyword">NOT NULL UNIQUE</span>
+);
+
+<span class="keyword">CREATE TABLE IF NOT EXISTS</span> pedidos (
+  pedido_id <span class="type">integer</span> <span class="keyword">PRIMARY KEY</span>,
+  data_pedido <span class="type">date</span> <span class="keyword">NOT NULL</span>,
+  cliente_id <span class="type">integer</span> <span class="keyword">NOT NULL REFERENCES</span> clientes(cliente_id)
+);
+
+<span class="keyword">CREATE TABLE IF NOT EXISTS</span> produtos (
+  produto_id <span class="type">integer</span> <span class="keyword">PRIMARY KEY</span>,
+  nome <span class="type">text</span> <span class="keyword">NOT NULL UNIQUE</span>
+);
+
+<span class="keyword">CREATE TABLE IF NOT EXISTS</span> itens_pedido (
+  pedido_id <span class="type">integer</span> <span class="keyword">NOT NULL REFERENCES</span> pedidos(pedido_id),
+  produto_id <span class="type">integer</span> <span class="keyword">NOT NULL REFERENCES</span> produtos(produto_id),
+  quantidade <span class="type">integer</span> <span class="keyword">NOT NULL CHECK</span> (quantidade &gt; 0),
+  preco_unitario_vendido <span class="type">numeric</span>(10,2) <span class="keyword">NOT NULL CHECK</span> (preco_unitario_vendido &gt;= 0),
+  <span class="keyword">PRIMARY KEY</span> (pedido_id, produto_id)
+);</code></pre>
+          <p>Com as tabelas criadas, inserimos dados fictícios que respeitam as chaves estrangeiras:</p>
+          <pre class="code-block"><code><span class="comment">-- PostgreSQL 18: dados de demonstração, sem dados pessoais reais.</span>
+<span class="keyword">INSERT INTO</span> artigo_normalizacao.clientes (cliente_id, nome, email)
+<span class="keyword">VALUES</span> (41, 'Ana Lima', 'ana@example.test');
+
+<span class="keyword">INSERT INTO</span> artigo_normalizacao.pedidos (pedido_id, data_pedido, cliente_id)
+<span class="keyword">VALUES</span> (501, DATE '2026-10-01', 41);
+
+<span class="keyword">INSERT INTO</span> artigo_normalizacao.produtos (produto_id, nome)
+<span class="keyword">VALUES</span> (7, 'Café'), (9, 'Filtro');
+
+<span class="keyword">INSERT INTO</span> artigo_normalizacao.itens_pedido
+  (pedido_id, produto_id, quantidade, preco_unitario_vendido)
+<span class="keyword">VALUES</span> (501, 7, 2, 18.90), (501, 9, 1, 12.00);</code></pre>
+          <p>A chave primária composta de <code>itens_pedido</code> evita repetir o mesmo produto no mesmo pedido. As chaves estrangeiras mantêm as relações válidas; <code>CHECK</code> impede quantidade zero ou preço negativo. As constraints são verificadas pelo PostgreSQL quando os dados são inseridos ou atualizados [3].</p>
+          <pre class="code-block"><code><span class="keyword">SELECT</span> p.pedido_id,
+       c.nome <span class="keyword">AS</span> cliente,
+       pr.nome <span class="keyword">AS</span> produto,
+       i.quantidade,
+       i.preco_unitario_vendido,
+       i.quantidade * i.preco_unitario_vendido <span class="keyword">AS</span> subtotal
+<span class="keyword">FROM</span> artigo_normalizacao.pedidos p
+<span class="keyword">JOIN</span> artigo_normalizacao.clientes c <span class="keyword">USING</span> (cliente_id)
+<span class="keyword">JOIN</span> artigo_normalizacao.itens_pedido i <span class="keyword">USING</span> (pedido_id)
+<span class="keyword">JOIN</span> artigo_normalizacao.produtos pr <span class="keyword">USING</span> (produto_id)
+<span class="keyword">ORDER BY</span> p.pedido_id, pr.nome;</code></pre>
+          <p class="small-note">A consulta recompõe uma visão útil com <code>JOIN</code>. Normalização não elimina consultas com junções; ela coloca cada fato em uma única fonte de verdade para facilitar sua manutenção.</p>
+        </section>
+
+        <section id="erros">
+          <p class="eyebrow">05 · Erros comuns</p>
+          <h2>O que costuma dar errado na primeira tentativa</h2>
+          <ul class="check-list">
+            <li><strong>Confundir 1FN com “um campo não pode ter espaços”.</strong> O critério é o valor do domínio e a regra de negócio, não a pontuação do texto.</li>
+            <li><strong>Esquecer a chave composta.</strong> Sem identificar a chave candidata, não dá para explicar com precisão o que depende de parte dela.</li>
+            <li><strong>Apagar um fato histórico útil.</strong> O preço que foi cobrado no pedido é diferente do preço atual do produto.</li>
+            <li><strong>Achar que normalização garante todas as regras do negócio.</strong> Unicidade, obrigatoriedade, limites e relacionamentos também precisam de constraints explícitas.</li>
+            <li><strong>Tratar todo dado repetido como erro.</strong> Uma cópia histórica pode representar um fato diferente e deliberado.</li>
+          </ul>
+        </section>
+
+        <section id="limites">
+          <p class="eyebrow">06 · Limites e próximos passos</p>
+          <h2>Normalize para preservar significado, não por uma regra automática</h2>
+          <p>Este exemplo mostra dependências simples e uma decomposição direta. Na prática, as dependências precisam refletir regras reais. Se e-mail não for único, não devemos impor <code>UNIQUE</code>. Se o cliente puder ter vários endereços, a relação precisa ser modelada separadamente. E sistemas de relatório podem usar visões materializadas ou tabelas derivadas para reduzir custo de leitura — desde que o grupo meça o problema, defina como atualizar o resultado e preserve uma fonte confiável dos fatos.</p>
+          <p>Para começar na área, pegue uma planilha pequena, marque a chave candidata, escreva as dependências funcionais e pergunte quais anomalias aparecem ao inserir, alterar e excluir linhas. Depois, desenhe a decomposição, crie as constraints e compare as consultas antes e depois.</p>
+          <div class="callout"><strong>O que não estamos fazendo:</strong> não vamos defender “sempre normalize até a 3FN” sem conhecer as consultas, as regras de negócio e o custo de manter os dados derivados.</div>
+        </section>
+
+        <section id="referencias">
+          <p class="eyebrow">07 · Referências e leituras</p>
+          <h2>Para aprofundar</h2>
+          <ol class="references">
+            <li><a href="https://research.ibm.com/publications/a-relational-model-of-data-for-large-shared-data-banks">E. F. Codd, “A Relational Model of Data for Large Shared Data Banks” (1970)</a> — texto original que introduz o modelo relacional e discute redundância e consistência.</li>
+            <li><a href="https://www.sigmod.org/publications/dblp/db/labs/ibm/RJ909.html">E. F. Codd, “Further Normalization of the Data Base Relational Model” (IBM Research Report RJ909, 1971)</a> — referência histórica para 2FN e 3FN.</li>
+            <li><a href="https://www.postgresql.org/docs/18/ddl-constraints.html">Documentação oficial do PostgreSQL 18: Constraints</a> — sintaxe e comportamento de chaves, referências e checks usados no script.</li>
+            <li><a href="https://www.alura.com.br/artigos/normalizacao">Alura, “Normalização: o que é, para que serve e como usá-la”</a> — leitura introdutória em português para acompanhar uma primeira explicação de anomalias e formas normais.</li>
+          </ol>
+          <p class="citation-note">As referências [1] e [2] sustentam o contexto histórico e teórico; [3] documenta o SQL do exemplo. A página da Alura foi analisada como referência didática, não como fonte primária das definições formais.</p>
+        </section>
+
+        <section id="autoria" class="authors">
+          <p class="eyebrow">Autoria</p>
+          <h2>Quem escreveu</h2>
+          <p>Os cartões apresentam os integrantes do grupo. As fotos e informações foram incluídas com autorização de seus autores.</p>
+          <div class="author-card">
+            <img class="author-photo" src="images/enrico-monteiro-de-andrade.jpg" alt="Retrato de Enrico Monteiro de Andrade, usando óculos e camiseta preta">
+            <div><h3>Enrico Monteiro de Andrade</h3><p>Tenho 18 anos e sou estudante do 2º semestre de Ciência da Computação, apaixonado por tecnologia e desenvolvimento de software. Atualmente, estou aprimorando meus conhecimentos em programação, com foco em Go (Golang), e buscando desenvolver projetos que contribuam para meu crescimento profissional na área de tecnologia.</p><p><a href="https://github.com/Rinopeto/Quiz-projeto-Semestre" target="_blank" rel="noopener noreferrer">GitHub · projeto do semestre</a> · <a href="https://www.linkedin.com/in/enrico-m-036399394/" target="_blank" rel="noopener noreferrer">LinkedIn</a></p></div>
+          </div>
+          <div class="author-card">
+            <img class="author-photo" src="images/bruno-seiti-ota.jpg" alt="Retrato de Bruno Seiti Ota ao ar livre">
+            <div><h3>Bruno Seiti Ota</h3><p>Jovem estudante do 2º semestre de Ciência da Computação, interessado em progredir na área acadêmica.</p><p><a href="https://github.com/Brun0cj" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="https://www.linkedin.com/in/bruno-ota-226031432" target="_blank" rel="noopener noreferrer">LinkedIn</a></p></div>
+          </div>
+<div class="author-card">
+            <img class="author-photo" src="images/matheus-alves-da-silva.jpg" alt="Retrato de Matheus Alves da Silva ao ar livre, usando camisa clara">
+            <div><h3>Matheus Alves da Silva</h3><p>Estudante do 2º semestre de Ciência da Computação e integrante deste artigo sobre normalização de bancos de dados. Neste trabalho, participou da organização de um exemplo prático de modelagem relacional.</p><p><a href="https://github.com/matheussilvacsbrazcubas" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="https://www.linkedin.com/in/matheus-alves-624033431/" target="_blank" rel="noopener noreferrer">LinkedIn</a></p></div>
+          </div>
+          <div class="author-card">
+            <img class="author-photo" src="images/gabriel-tavares-moura-dias.jpg" alt="Foto de Gabriel Tavares Moura Dias em um espelho, com o celular cobrindo parte do rosto">
+            <div><h3>Gabriel Tavares Moura Dias</h3><p>Estudante do 2º semestre de Ciência da Computação, interessado em programação, desenvolvimento de software e tecnologia. Busca aprimorar seus conhecimentos e desenvolver habilidades na área de computação.</p><p><a href="https://github.com/Gabrix01" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="https://www.linkedin.com/in/gabriel-tavares-2201bb431/" target="_blank" rel="noopener noreferrer">LinkedIn</a></p></div>
+          </div>
+          <div class="author-card">
+            <img class="author-photo" src="images/eduardo-elioterio-de-oliveira.jpg" alt="Retrato de Eduardo Elioterio de Oliveira, estudante de Ciência da Computação">
+            <div><h3>Eduardo Elioterio de Oliveira</h3><p>Estudante de Ciência da Computação na Brazcubas, interessado em desenvolvimento back-end, engenharia de software e banco de dados. Busca aprimorar seus conhecimentos em programação, desenvolver projetos práticos e adquirir experiência profissional na área de tecnologia.</p><p><a href="https://github.com/wilkenoliver" target="_blank" rel="noopener noreferrer">GitHub</a> · <a href="https://www.linkedin.com/in/eduardo-elioterio-906b0038a/" target="_blank" rel="noopener noreferrer">LinkedIn</a></p></div>
+          </div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p><strong>Modelagem na prática</strong> · artigo didático sobre normalização relacional.</p>
+      <p>Última revisão: 19 de outubro de 2026 · Publicação: 19 de outubro de 2026 · Conteúdo e diagrama: CC BY 4.0 · Código: MIT · Fotos: uso autorizado nesta página; reutilização requer autorização.</p>
+      <p>Repositório: link será incluído após a publicação.</p>
+    </div>
+  </footer>
+</body>
+</html>
